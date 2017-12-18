@@ -21,4 +21,5 @@ import (
 func (sb *StorageBuilder) newMemoryStoreBuilder(memStore *memory.Store) {
 	sb.SpanReader = memStore
 	sb.DependencyReader = memStore
+	sb.SpanWriter = memStore
 }

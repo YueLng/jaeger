@@ -34,16 +34,22 @@ type Store struct {
 	services   map[string]struct{}
 	operations map[string]map[string]struct{}
 	deduper    adjuster.Adjuster
+	gcInterval time.Duration //gc周期
+	stopGc     chan bool     //停止gc管道标识
 }
 
 // NewStore creates an in-memory store
 func NewStore() *Store {
-	return &Store{
+	store := &Store{
 		traces:     map[model.TraceID]*model.Trace{},
 		services:   map[string]struct{}{},
 		operations: map[string]map[string]struct{}{},
 		deduper:    adjuster.SpanIDDeduper(),
+		gcInterval: time.Duration(2) * time.Hour,
+		stopGc:     make(chan bool),
 	}
+	go store.gcLoop()
+	return store
 }
 
 // GetDependencies returns dependencies between services
@@ -106,16 +112,16 @@ func (m *Store) traceIsBetweenStartAndEnd(startTs, endTs time.Time, trace *model
 func (m *Store) WriteSpan(span *model.Span) error {
 	m.Lock()
 	defer m.Unlock()
+
 	if _, ok := m.operations[span.Process.ServiceName]; !ok {
 		m.operations[span.Process.ServiceName] = map[string]struct{}{}
 	}
 	m.operations[span.Process.ServiceName][span.OperationName] = struct{}{}
 	m.services[span.Process.ServiceName] = struct{}{}
 	if _, ok := m.traces[span.TraceID]; !ok {
-		m.traces[span.TraceID] = &model.Trace{}
+		m.traces[span.TraceID] = &model.Trace{Expiration: time.Now().Add(m.gcInterval)}
 	}
 	m.traces[span.TraceID].Spans = append(m.traces[span.TraceID].Spans, span)
-
 	return nil
 }
 
@@ -177,16 +183,8 @@ func (m *Store) validTrace(trace *model.Trace, query *spanstore.TraceQueryParame
 			return true
 		}
 	}
+	// TODO 这里验证为什么没有过，
 	return false
-}
-
-func findKeyValueMatch(kvs model.KeyValues, key, value string) (model.KeyValue, bool) {
-	for _, kv := range kvs {
-		if kv.Key == key && kv.AsString() == value {
-			return kv, true
-		}
-	}
-	return model.KeyValue{}, false
 }
 
 func (m *Store) validSpan(span *model.Span, query *spanstore.TraceQueryParameters) bool {
@@ -210,14 +208,22 @@ func (m *Store) validSpan(span *model.Span, query *spanstore.TraceQueryParameter
 	}
 	spanKVs := m.flattenTags(span)
 	for queryK, queryV := range query.Tags {
-		// (NB): we cannot use the KeyValues.FindKey function because there can be multiple tags with the same key
-		if _, ok := findKeyValueMatch(spanKVs, queryK, queryV); !ok {
+		keyValueFoundAndMatches := false
+		// (NB): we cannot find the KeyValue.Find function because there can be multiple tags with the same key
+		for _, keyValue := range spanKVs {
+			if keyValue.Key == queryK && keyValue.AsString() == queryV {
+				keyValueFoundAndMatches = true
+				break
+			}
+		}
+		if !keyValueFoundAndMatches {
 			return false
 		}
 	}
 	return true
 }
 
+// TODO: this is a good candidate function to have on a span
 func (m *Store) flattenTags(span *model.Span) model.KeyValues {
 	retMe := span.Tags
 	retMe = append(retMe, span.Process.Tags...)
@@ -225,4 +231,34 @@ func (m *Store) flattenTags(span *model.Span) model.KeyValues {
 		retMe = append(retMe, l.Fields...)
 	}
 	return retMe
+}
+
+//循环gc
+func (m *Store) gcLoop() {
+	ticker := time.NewTicker(m.gcInterval) //初始化一个定时器
+	for {
+		select {
+		case <-ticker.C:
+			m.DeleteExpired()
+		case <-m.stopGc:
+			ticker.Stop()
+			return
+		}
+	}
+}
+
+func (m *Store) DeleteExpired() {
+	now := time.Now().UnixNano()
+	m.Lock()
+	defer m.Unlock()
+	for k, v := range m.traces {
+		if v.Expiration.UnixNano() > 0 && now > v.Expiration.UnixNano() {
+			m.deleteTrace(k)
+		}
+	}
+}
+
+//删除
+func (m *Store) deleteTrace(k model.TraceID) {
+	defer m.Unlock()
 }

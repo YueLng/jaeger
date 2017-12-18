@@ -14,10 +14,13 @@
 
 package model
 
+import "time"
+
 // Trace is a directed acyclic graph of Spans
 type Trace struct {
-	Spans    []*Span  `json:"spans,omitempty"`
-	Warnings []string `json:"warnings,omitempty"`
+	Spans      []*Span  `json:"spans,omitempty"`
+	Warnings   []string `json:"warnings,omitempty"`
+	Expiration time.Time
 }
 
 // FindSpanByID looks for a span with given span ID and returns the first one
@@ -36,4 +39,11 @@ func (t *Trace) NormalizeTimestamps() {
 	for _, span := range t.Spans {
 		span.NormalizeTimestamps()
 	}
+}
+
+func (t *Trace) IsExpired() bool {
+	if t.Expiration.IsZero() {
+		return false
+	}
+	return time.Now().UnixNano() > t.Expiration.UnixNano() //如果当前时间超则过期
 }

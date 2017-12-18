@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/opentracing/opentracing-go"
-	"go.uber.org/zap"
+	//"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/model/adjuster"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
@@ -34,11 +34,11 @@ type handlerOptions struct{}
 
 // Logger creates a HandlerOption that initializes Logger on the APIHandler,
 // which is used to emit logs.
-func (handlerOptions) Logger(logger *zap.Logger) HandlerOption {
-	return func(apiHandler *APIHandler) {
-		apiHandler.logger = logger
-	}
-}
+//func (handlerOptions) Logger(logger *zap.Logger) HandlerOption {
+//	return func(apiHandler *APIHandler) {
+//		apiHandler.logger = logger
+//	}
+//}
 
 // Adjusters creates a HandlerOption that initializes the sequence of Adjusters on the APIHandler,
 func (handlerOptions) Adjusters(adjusters ...adjuster.Adjuster) HandlerOption {

@@ -17,6 +17,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"strconv"
 	"time"
@@ -25,8 +26,8 @@ import (
 	"github.com/opentracing-contrib/go-stdlib/nethttp"
 	"github.com/opentracing/opentracing-go"
 	"github.com/pkg/errors"
-	"go.uber.org/zap"
 
+	"github.com/apache/thrift/lib/go/thrift"
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/model/adjuster"
 	uiconv "github.com/jaegertracing/jaeger/model/converter/json"
@@ -34,6 +35,8 @@ import (
 	"github.com/jaegertracing/jaeger/pkg/multierror"
 	"github.com/jaegertracing/jaeger/storage/dependencystore"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
+	log "github.com/sirupsen/logrus"
+	j "github.com/uber/jaeger-client-go/thrift-gen/jaeger"
 )
 
 const (
@@ -72,21 +75,24 @@ type structuredError struct {
 // APIHandler implements the query service public API by registering routes at httpPrefix
 type APIHandler struct {
 	spanReader        spanstore.Reader
+	spanWriter        spanstore.Writer
 	archiveSpanReader spanstore.Reader
 	archiveSpanWriter spanstore.Writer
 	dependencyReader  dependencystore.Reader
 	adjuster          adjuster.Adjuster
-	logger            *zap.Logger
+	logger            *log.Logger
 	queryParser       queryParser
 	httpPrefix        string
 	tracer            opentracing.Tracer
 }
 
 // NewAPIHandler returns an APIHandler
-func NewAPIHandler(spanReader spanstore.Reader, dependencyReader dependencystore.Reader, options ...HandlerOption) *APIHandler {
+func NewAPIHandler(spanReader spanstore.Reader, dependencyReader dependencystore.Reader, spanWriter spanstore.Writer, options ...HandlerOption) *APIHandler {
 	aH := &APIHandler{
-		spanReader:       spanReader,
-		dependencyReader: dependencyReader,
+		spanReader:        spanReader,
+		archiveSpanWriter: spanWriter,
+		spanWriter:        spanWriter,
+		dependencyReader:  dependencyReader,
 		queryParser: queryParser{
 			traceQueryLookbackDuration: defaultTraceQueryLookbackDuration,
 			timeNow:                    time.Now,
@@ -103,7 +109,7 @@ func NewAPIHandler(spanReader spanstore.Reader, dependencyReader dependencystore
 		aH.adjuster = adjuster.Sequence(StandardAdjusters...)
 	}
 	if aH.logger == nil {
-		aH.logger = zap.NewNop()
+		aH.logger = log.StandardLogger()
 	}
 	if aH.tracer == nil {
 		aH.tracer = opentracing.NoopTracer{}
@@ -122,6 +128,7 @@ func (aH *APIHandler) RegisterRoutes(router *mux.Router) {
 	// TODO - remove this when UI catches up
 	aH.handleFunc(router, aH.getOperationsLegacy, "/services/{%s}/operations", serviceParam).Methods(http.MethodGet)
 	aH.handleFunc(router, aH.dependencies, "/dependencies").Methods(http.MethodGet)
+	aH.handleFunc(router, aH.add, "/traces").Methods(http.MethodPost)
 }
 
 func (aH *APIHandler) handleFunc(
@@ -143,6 +150,35 @@ func (aH *APIHandler) handleFunc(
 func (aH *APIHandler) route(route string, args ...interface{}) string {
 	args = append([]interface{}{aH.httpPrefix}, args...)
 	return fmt.Sprintf("/%s"+route, args...)
+}
+
+func (aH *APIHandler) add(w http.ResponseWriter, r *http.Request) {
+	var err error
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	buffer := thrift.NewTMemoryBuffer()
+	if _, err = buffer.Write(body); err != nil {
+		fmt.Println(err)
+		return
+	}
+	transport := thrift.NewTBinaryProtocolTransport(buffer)
+	batch := &j.Batch{}
+	if err = batch.Read(transport); err != nil {
+		fmt.Println(err)
+		return
+	}
+	for _, span := range convertThriftToModel(batch.Spans, batch.Process) {
+		s := span
+		err = aH.archiveSpanWriter.WriteSpan(&s)
+	}
+
+	if aH.handleError(w, err, http.StatusInternalServerError) {
+		return
+	}
+	return
 }
 
 func (aH *APIHandler) getServices(w http.ResponseWriter, r *http.Request) {

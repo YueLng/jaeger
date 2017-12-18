@@ -33,6 +33,7 @@ type StorageBuilder struct {
 	metricsFactory   metrics.Factory
 	SpanReader       spanstore.Reader
 	DependencyReader dependencystore.Reader
+	SpanWriter       spanstore.Writer
 }
 
 var (
