@@ -260,5 +260,5 @@ func (m *Store) DeleteExpired() {
 
 //删除
 func (m *Store) deleteTrace(k model.TraceID) {
-	defer m.Unlock()
+	delete(m.traces, k)
 }
