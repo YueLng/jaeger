@@ -22,6 +22,7 @@ import (
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/model/adjuster"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
+	log "github.com/sirupsen/logrus"
 )
 
 var errTraceNotFound = errors.New("Trace was not found")
@@ -45,7 +46,7 @@ func NewStore() *Store {
 		services:   map[string]struct{}{},
 		operations: map[string]map[string]struct{}{},
 		deduper:    adjuster.SpanIDDeduper(),
-		gcInterval: time.Duration(2) * time.Hour,
+		gcInterval: time.Duration(12) * time.Hour,
 		stopGc:     make(chan bool),
 	}
 	go store.gcLoop()
@@ -251,9 +252,11 @@ func (m *Store) DeleteExpired() {
 	now := time.Now().UnixNano()
 	m.Lock()
 	defer m.Unlock()
+	log.Println("gc begin ....")
 	for k, v := range m.traces {
 		if v.Expiration.UnixNano() > 0 && now > v.Expiration.UnixNano() {
 			m.deleteTrace(k)
+			log.Println("delete traceid", k.String())
 		}
 	}
 }
